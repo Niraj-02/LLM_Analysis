@@ -7,25 +7,13 @@ from typing import Any, Dict, Optional
 def post_request(url: str, payload: Dict[str, Any], headers: Optional[Dict[str, str]] = None) -> Any:
     """
     Send an HTTP POST request to the given URL with the provided payload.
-
-    This function is designed for LangGraph applications, where it can be wrapped
-    as a Tool or used inside a Runnable to call external APIs, webhooks, or backend
-    services during graph execution.
-    REMEMBER: This a blocking function so it may take a while to return. Wait for the response.
-    Args:
-        url (str): The endpoint to send the POST request to.
-        payload (Dict[str, Any]): The JSON-serializable request body.
-        headers (Optional[Dict[str, str]]): Optional HTTP headers to include
-            in the request. If omitted, a default JSON header is applied.
-
-    Returns:
-        Any: The response body. If the server returns JSON, a parsed dict is
-        returned. Otherwise, the raw text response is returned.
-
-    Raises:
-        requests.HTTPError: If the server responds with an unsuccessful status.
-        requests.RequestException: For network-related errors.
+    This function handles quiz submissions. 
+    It returns the server response, but ensures:
+    - we NEVER delete the URL
+    - if delay >= 180 seconds, we STOP retrying and move on
+    - the agent always receives the URL needed to continue
     """
+
     headers = headers or {"Content-Type": "application/json"}
     try:
         print(f"\nSending Answer \n{json.dumps(payload, indent=4)}\n to url: {url}")
@@ -34,23 +22,48 @@ def post_request(url: str, payload: Dict[str, Any], headers: Optional[Dict[str, 
         # Raise on 4xx/5xx
         response.raise_for_status()
 
-        # Try to return JSON, fallback to raw text
+        # Parse JSON if possible
         data = response.json()
+
         delay = data.get("delay", 0)
         delay = delay if isinstance(delay, (int, float)) else 0
-        correct = data.get("correct")
-        if not correct and delay < 180:
-            del data["url"]
-        if delay >= 180:
-            data = {
-                "url": data.get("url")
-            }
-        print("Got the response: \n", json.dumps(data, indent=4), '\n')
-        return data
-    except requests.HTTPError as e:
-        # Extract server’s error response
-        err_resp = e.response
 
+        correct = data.get("correct")
+        reason = data.get("reason")
+        next_url = data.get("url")
+
+        # -----------------------------
+        # NEW LOGIC: STOP AFTER 180 SEC
+        # -----------------------------
+        # If total time exceeds 180 seconds, 
+        # return the URL as-is and move on.
+        if delay >= 180:
+            cleaned = {
+                "correct": correct,
+                "reason": reason,
+                "url": next_url,   # could be None → agent ends
+                "delay": delay
+            }
+            print("Got the response: \n", json.dumps(cleaned, indent=4), '\n')
+            return cleaned
+
+        # -----------------------------
+        # NORMAL CASE (<180 sec)
+        # -----------------------------
+        # Always keep the URL so agent can retry or continue.
+        cleaned = {
+            "correct": correct,
+            "reason": reason,
+            "url": next_url,
+            "delay": delay
+        }
+
+        print("Got the response: \n", json.dumps(cleaned, indent=4), '\n')
+        return cleaned
+
+
+    except requests.HTTPError as e:
+        err_resp = e.response
         try:
             err_data = err_resp.json()
         except ValueError:
